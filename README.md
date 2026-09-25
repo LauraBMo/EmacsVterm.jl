@@ -26,6 +26,19 @@ Better integration of Julia REPL with Emacs vterm terminal.
    ```
    to your Emacs config.
 
+4. Install [julia-help.el](https://github.com/LauraBMo/julia-help.el), the Emacs
+   side of the documentation display.  Docstrings are now rendered from the
+   metadata Julia sends (the binding, the signature, one row per method with its
+   source line, and working `@ref` links), and this is the package that receives
+   it:
+
+   ```elisp
+   (package! julia-help :recipe (:host github :repo "LauraBMo/julia-help.el"))
+   ```
+
+   Without it `@doc` reports an unknown `julia-help-show` command and shows
+   nothing: `julia-repl`'s handler no longer draws documentation.
+
 ## Features
 
 - You can jump between prompts in `*julia*` REPL buffers with `C-c
@@ -45,16 +58,16 @@ Better integration of Julia REPL with Emacs vterm terminal.
   ```
 
   If you are not happy with where Emacs chooses to display the
-  `*julia-doc*` buffer, you can configure it via a "display action".
+  `*julia-help: SYMBOL*` buffer, you can configure it via a "display action".
   For example, the following piece of code in `init.el` ensures that
-  if the `*julia-doc*` buffer is already shown somewhere, the same
+  if the buffer for a symbol is already shown somewhere, the same
   buffer is reused; otherwise, a right side window with an appropriate
   width will be created.
 
   ```elisp
-  (add-to-list 'display-buffer-alist '("\\*julia-doc\\*"
-				       (display-buffer-reuse-window display-buffer-in-side-window)
-				       (side . right) (window-width . 80)))
+  (add-to-list 'display-buffer-alist '("\\*julia-help"
+				     (display-buffer-reuse-window display-buffer-in-side-window)
+				     (side . right) (window-width . 80)))
   ```
 
 - Images can be shown in the `*julia-img*` Emacs buffer. This
