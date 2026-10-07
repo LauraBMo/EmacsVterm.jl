@@ -12,18 +12,13 @@ using Base.Docs
 
 @testset "EmacsVterm.jl" begin
 
-    @testset "json_escape" begin
-        @test EmacsVterm.json_escape("plain") == "plain"
-        @test EmacsVterm.json_escape("a\"b") == "a\\\"b"
-        @test EmacsVterm.json_escape("a\\b") == "a\\\\b"
-        @test EmacsVterm.json_escape("a\nb") == "a\\nb"
-        @test EmacsVterm.json_escape("a\rb") == "a\\rb"
-        @test EmacsVterm.json_escape("a\tb") == "a\\tb"
-        # A raw control character is not legal in a JSON string.
-        @test EmacsVterm.json_escape("\x01") == "\\u0001"
-        # Anything printable, non-ASCII included, is passed through: the
-        # transport is base64, so UTF-8 needs no escaping of its own.
-        @test EmacsVterm.json_escape("λ ∘ →") == "λ ∘ →"
+    @testset "json_or_null" begin
+        # What has nothing in it must travel as `null', because an empty string
+        # is *true* in elisp and would print an empty field instead of none.
+        @test EmacsVterm.json_or_null("") === nothing
+        @test EmacsVterm.json_or_null(nothing) === nothing
+        @test EmacsVterm.json_or_null("sin") == "sin"
+        @test EmacsVterm.json_or_null(:sin) == "sin"
     end
 
     @testset "method_signature" begin
@@ -57,9 +52,15 @@ using Base.Docs
         @test isfile(rebased)
         @test EmacsVterm.source_file(recorded) == rebased
 
-        # Not a stdlib path at all.
+        # Not a stdlib path at all.  `stdlib' on its own is not enough: the
+        # build path is anchored at `julia/stdlib', so a directory that merely
+        # happens to be called `stdlib' does not match.
         @test EmacsVterm.rebase_stdlib("/home/someone/Package/src/x.jl") === nothing
         @test EmacsVterm.rebase_stdlib("stdlib") === nothing
+        @test EmacsVterm.rebase_stdlib("/home/someone/src/stdlib/x.jl") === nothing
+        # The marker with no package after it is not a file.
+        @test EmacsVterm.rebase_stdlib("julia/stdlib") === nothing
+        @test EmacsVterm.rebase_stdlib("julia/stdlib/v1.13") === nothing
     end
 
     @testset "doc_payload for a function with methods" begin
@@ -69,7 +70,7 @@ using Base.Docs
         @test occursin("\"symbol\":\"sin\"", payload)
         @test occursin("\"binding\":\"Base.sin\"", payload)
         @test occursin("\"module\":\"Base\"", payload)
-        @test occursin("\"typesig\":\"Union{}\"", payload)
+        @test occursin("\"typesig\":null", payload)      # no signature queried
 
         # The signature is built from the tuple type Julia records, rather
         # than left blank.
@@ -87,7 +88,15 @@ using Base.Docs
         payload = EmacsVterm.doc_payload(Docs.doc(Docs.Binding(Base, :pi), Union{}))
         @test occursin("\"symbol\":\"pi\"", payload)
         @test occursin("\"sig\":\"pi\"", payload)        # no methods, so no args
-        @test occursin("\"typesig\":\"Union{}\"", payload)
+        @test occursin("\"typesig\":null", payload)
+    end
+
+    @testset "doc_payload keeps a queried signature" begin
+        # Only `Union{}' means "none asked for": a signature given by name is
+        # sent as the string Julia renders, and must not be suppressed.
+        md = Docs.doc(Docs.Binding(Base, :sin), Tuple{typeof(sin), Float64})
+        @test occursin("\"typesig\":\"Tuple{typeof(sin), Float64}\"",
+                       EmacsVterm.doc_payload(md))
     end
 
     @testset "doc_payload escapes what it embeds" begin
@@ -105,9 +114,8 @@ using Base.Docs
 
         # Note which layer escapes what.  The docstring's quote reaches the
         # payload as `&quot;', because Markdown.html escapes it long before
-        # json_escape is called -- so asserting `\"' here would be asserting
-        # something that correctly never happens.  The quote case is covered
-        # in the json_escape testset, on strings it actually sees.
+        # JSON.jl sees the string -- so asserting `\"' here would be asserting
+        # something that correctly never happens.
         @test occursin("&quot;", payload)
         @test occursin("\\\\", payload)      # one backslash, escaped for JSON
         @test occursin("\\u0001", payload)
@@ -129,9 +137,6 @@ using Base.Docs
         @test occursin("\"typesig\":null", payload)
         @test occursin("\"results\":[]", payload)
         @test occursin("Compute sine", payload)
-
-        @test EmacsVterm.json_or_null("") == "null"
-        @test EmacsVterm.json_or_null("sin") == "\"sin\""
     end
 
     @testset "display writes the escape sequence Emacs expects" begin
@@ -139,21 +144,38 @@ using Base.Docs
         was = EmacsVterm.options.markdown
         EmacsVterm.options.markdown = true
         try
-            io = IOBuffer()
-            Base.display(EmacsVterm.Display(io), md)
-            written = String(take!(io))
-
-            @test startswith(written, "\e]51;E")
-            @test endswith(written, "\e\\")
-            @test occursin(EmacsVterm.SHOW_COMMAND * " documentation application/json \"",
-                           written)
-
-            # What travels is base64, so the command's arguments survive
+            # When julia-repl advertises that it can render JSON, that is what
+            # goes; what travels is base64, so the command's arguments survive
             # `split-string-and-unquote' on the Emacs side whatever the
             # docstring held.
-            b64 = match(r"\"([A-Za-z0-9+/=]+)\"", written)
-            @test b64 !== nothing
-            @test String(Base64.base64decode(b64[1])) == EmacsVterm.doc_payload(md)
+            Base.withenv("JULIA_REPL_SHOW" =>
+                         "documentation/text/html,documentation/application/json") do
+                io = IOBuffer()
+                Base.display(EmacsVterm.Display(io), md)
+                written = String(take!(io))
+
+                @test startswith(written, "\e]51;E")
+                @test endswith(written, "\e\\")
+                @test occursin("julia-repl--show documentation application/json \"",
+                               written)
+
+                b64 = match(r"\"([A-Za-z0-9+/=]+)\"", written)
+                @test b64 !== nothing
+                @test String(Base64.base64decode(b64[1])) == EmacsVterm.doc_payload(md)
+            end
+
+            # An older julia-repl advertises nothing and gets plain HTML, as it
+            # always did.
+            Base.withenv("JULIA_REPL_SHOW" => nothing) do
+                io = IOBuffer()
+                Base.display(EmacsVterm.Display(io), md)
+                written = String(take!(io))
+
+                @test occursin("julia-repl--show documentation text/html \"", written)
+                b64 = match(r"\"([A-Za-z0-9+/=]+)\"", written)
+                @test b64 !== nothing
+                @test String(Base64.base64decode(b64[1])) == Markdown.html(md)
+            end
         finally
             EmacsVterm.options.markdown = was
         end

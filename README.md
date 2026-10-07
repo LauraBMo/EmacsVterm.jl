@@ -36,8 +36,10 @@ Better integration of Julia REPL with Emacs vterm terminal.
    (package! julia-help :recipe (:host github :repo "LauraBMo/julia-help.el"))
    ```
 
-   Without it `@doc` reports an unknown `julia-help-show` command and shows
-   nothing: `julia-repl`'s handler no longer draws documentation.
+   `julia-repl` calls this renderer.  Without it nothing is broken, only
+   plainer: `julia-repl` then advertises only HTML to Julia, so EmacsVterm
+   sends HTML and `julia-repl` renders the documentation itself, in a
+   `*julia-doc*` buffer.
 
 ## Features
 
